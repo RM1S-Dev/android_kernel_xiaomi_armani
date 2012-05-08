@@ -14,7 +14,6 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/if.h>
-#include <linux/netfilter_ipv4/ip_queue.h>
 #include <linux/inet_diag.h>
 #include <linux/xfrm.h>
 #include <linux/audit.h>
