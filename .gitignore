@@ -83,4 +83,12 @@ GTAGS
 
 *.orig
 *~
+
+# add user ignores
+dtbToolCM
+*.sh
+*.img
+kernel/hz.bc
+firmware/ist30xx_wintek.cms
+
 \#*#
