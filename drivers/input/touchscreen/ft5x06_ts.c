@@ -31,11 +31,11 @@
 #include <linux/input/mt.h>
 #include <asm-generic/cputime.h>
 #include "ft5x06_ts.h"
-#if defined(CONFIG_FB)
+#ifdef CONFIG_STATE_NOTIFIER
+#include <linux/state_notifier.h>
+#else
 #include <linux/notifier.h>
 #include <linux/fb.h>
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-#include <linux/earlysuspend.h>
 #endif
 
 //register address
@@ -184,11 +184,7 @@ struct ft5x06_data {
 	struct ft5x06_finger power_finger;
 	int d2w_switch;
 	bool touch_cnt;
-#if defined(CONFIG_FB)
-	struct notifier_block fb_notif;
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-	struct early_suspend early_suspend;
-#endif
+	struct notifier_block notif;
 };
 
 static int ft5x06_recv_byte(struct ft5x06_data *ft5x06, u8 len, ...)
@@ -1008,14 +1004,43 @@ int ft5x06_resume(struct ft5x06_data *ft5x06)
 }
 EXPORT_SYMBOL_GPL(ft5x06_resume);
 
-#if defined(CONFIG_FB)
+#if CONFIG_STATE_NOTIFIER
+static int state_notifier_callback(struct notifier_block *self,
+				unsigned long event, void *data)
+{
+	struct ft5x06_data *ft5x06 =
+		container_of(self, struct ft5x06_data, notif);
+
+	if (ft5x06 && ft5x06->dev) {
+		switch (event) {
+			case STATE_NOTIFIER_ACTIVE:
+				if(ft5x06->in_suspend) {
+					dev_info(ft5x06->dev, "resume requested");
+					ft5x06_resume(ft5x06);
+				}
+				break;
+			case STATE_NOTIFIER_SUSPEND:
+				dev_info(ft5x06->dev, "suspend requested");
+				ft5x06_suspend(ft5x06);
+				break;
+			default:
+				break;
+		}
+
+   		// reset touch_cnt variable upon State unblank
+		ft5x06->touch_cnt = false;
+	}
+
+	return NOTIFY_OK;
+}
+#else
 static int fb_notifier_callback(struct notifier_block *self,
 				 unsigned long event, void *data)
 {
 	struct fb_event *evdata = data;
 	int *blank;
 	struct ft5x06_data *ft5x06 =
-		container_of(self, struct ft5x06_data, fb_notif);
+		container_of(self, struct ft5x06_data, notif);
 
 	if (evdata && evdata->data && event == FB_EVENT_BLANK &&
 			ft5x06 && ft5x06->dev) {
@@ -1044,20 +1069,6 @@ static int fb_notifier_callback(struct notifier_block *self,
 	}
 
 	return 0;
-}
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-static void ft5x06_early_suspend(struct early_suspend *h)
-{
-	struct ft5x06_data *ft5x06 = container_of(h,
-					struct ft5x06_data, early_suspend);
-	ft5x06_suspend(ft5x06);
-}
-
-static void ft5x06_early_resume(struct early_suspend *h)
-{
-	struct ft5x06_data *ft5x06 = container_of(h,
-					struct ft5x06_data, early_suspend);
-	ft5x06_resume(ft5x06);
 }
 #endif
 
@@ -2077,16 +2088,16 @@ struct ft5x06_data *ft5x06_probe(struct device *dev,
 		goto err_put_vkeys;
 	}
 
-#if defined(CONFIG_FB)
-	 ft5x06->fb_notif.notifier_call = fb_notifier_callback;
-	 error = fb_register_client(&ft5x06->fb_notif);
+#ifdef CONFIG_STATE_NOTIFIER
+    ft5x06->notif.notifier_call = state_notifier_callback;
+	 error = state_register_client(&ft5x06->notif);
+	 if (error)
+		 dev_err(dev, "Unable to register state_notifier: %d\n", error);
+#else
+	 ft5x06->notif.notifier_call = fb_notifier_callback;
+	 error = fb_register_client(&ft5x06->notif);
 	 if (error)
 		 dev_err(dev, "Unable to register fb_notifier: %d\n", error);
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-	ft5x06->early_suspend.level   = EARLY_SUSPEND_LEVEL_BLANK_SCREEN+1;
-	ft5x06->early_suspend.suspend = ft5x06_early_suspend;
-	ft5x06->early_suspend.resume  = ft5x06_early_resume;
-	register_early_suspend(&ft5x06->early_suspend);
 #endif
 
 	ft5x06->power_supply_notifier.notifier_call = ft5x06_power_supply_event;
@@ -2136,11 +2147,12 @@ void ft5x06_remove(struct ft5x06_data *ft5x06)
 
 	cancel_delayed_work_sync(&ft5x06->noise_filter_delayed_work);
 	unregister_power_supply_notifier(&ft5x06->power_supply_notifier);
-#if defined(CONFIG_FB)
-	if (fb_unregister_client(&ft5x06->fb_notif))
+#ifdef CONFIG_STATE_NOTIFIER
+	if (state_unregister_client(&ft5x06->notif))
+		dev_err(ft5x06->dev, "Error occurred while unregistering state_notifier.\n");
+#else
+	if (fb_unregister_client(&ft5x06->notif))
 		dev_err(ft5x06->dev, "Error occurred while unregistering fb_notifier.\n");
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-	unregister_early_suspend(&ft5x06->early_suspend);
 #endif
 	sysfs_remove_group(&ft5x06->dev->kobj, &ft5x06_attr_group);
 	kobject_put(ft5x06->vkeys_dir);
